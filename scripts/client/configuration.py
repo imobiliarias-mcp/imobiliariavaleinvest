@@ -10,6 +10,10 @@ class ValeInvestConfiguration:
     base_hostname: str = "imobiliariavaleinvest.com.br"
     base_url: str = "https://imobiliariavaleinvest.com.br"
 
+    def public_base_url(self) -> str:
+        """Return configured public site origin for property URL resolution."""
+        return self.base_url.rstrip("/")
+
     def origin_header_value(self) -> str:
         """Return canonical portal origin."""
         return f"https://{self.base_hostname}"

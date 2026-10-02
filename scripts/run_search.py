@@ -61,7 +61,9 @@ def display_results(result) -> None:
     print("-" * 75)
     for listing in result.listings():
         summary_line = listing.format_summary()
+        serialized = listing.to_dictionary()
         print(summary_line)
+        print(f"Link: {serialized['url']}")
     print("-" * 75)
 
 

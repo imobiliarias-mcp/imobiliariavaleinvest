@@ -267,3 +267,14 @@ python3 scripts/run_property_detail.py PT00028
 # Query taxonomy and inventory facets CLI
 python3 scripts/run_facets.py
 ```
+
+## 9. Public Property URL Serialization
+
+Search cards supply the public property page path through the card anchor `href`; the adapter
+resolves relative and protocol-relative links against its configured portal origin. Serialized
+listings include the absolute HTTP(S) destination in `url` and retain `media_url`. If a search
+card has no link, the adapter may use the documented `/imoveis/referencia-{referencia}/`
+lookup only when the card contains an explicit public reference code. It never guesses a route
+from the internal property ID. Detail pages prefer their `rel="canonical"` URL and use the
+same reference lookup only when an explicit public reference is present. API/catalog endpoints,
+image files, and search result routes are not accepted as property detail URLs.

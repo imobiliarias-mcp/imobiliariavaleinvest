@@ -1,23 +1,48 @@
 """Unit tests for domain models and value objects."""
 
 import pytest
+
 from scripts.domain.collections import RentalListingCollection, RentalSearchResult
 from scripts.domain.criteria import PriceRange, RentalFilter, SearchPagination
 from scripts.domain.entities import (
-    DetailedProfile,
     ListingCore,
     ListingDetails,
     ListingIdentity,
+    ListingResources,
     ListingValuation,
     RentalListing,
-    RentalPropertyDetail,
 )
 from scripts.domain.exceptions import (
     InvalidFilterException,
     InvalidPriceException,
     InvalidPropertyCodeException,
 )
-from scripts.domain.value_objects import AreaMeasure, ListingPrice, PropertyCode, RoomCount
+from scripts.domain.value_objects import (
+    AreaMeasure,
+    ListingPrice,
+    PropertyCode,
+    RoomCount,
+)
+
+
+@pytest.mark.parametrize(
+    ("details", "expected_media_url"),
+    [
+        (ListingDetails("Centro, Timóteo", media_url="keyword.jpg"), "keyword.jpg"),
+        (ListingDetails("Centro, Timóteo", "positional.jpg"), "positional.jpg"),
+        (
+            ListingDetails(
+                "Centro, Timóteo",
+                resources=ListingResources(media_url="composed.jpg", property_url="https://example.test/property"),
+            ),
+            "composed.jpg",
+        ),
+    ],
+    ids=("legacy-keyword", "legacy-positional", "composed-resources"),
+)
+def test_listing_details_exposes_legacy_media_url(details, expected_media_url: str) -> None:
+    """Expose media URL through both legacy and composed details construction."""
+    assert details.media_url == expected_media_url
 
 
 def test_listing_price_valid() -> None:
@@ -102,12 +127,35 @@ def test_rental_filter_fluent_interface() -> None:
     assert f.constraints.sorting.field == "valor"
 
 
+@pytest.mark.parametrize("property_url", ["", "/imoveis/referencia-PT00028/", "ftp://example.test/imovel/78933085"])
+def test_manual_listing_serializer_rejects_unresolved_public_url(property_url: str) -> None:
+    """Preserve legacy media construction but reject missing or relative links."""
+    details = ListingDetails(location_summary="Centro, Timóteo", media_url="legacy-image.jpg")
+    if property_url:
+        details = ListingDetails(
+            location_summary="Centro, Timóteo",
+            media_url="legacy-image.jpg",
+            property_url=property_url,
+        )
+    listing = RentalListing(
+        core=ListingCore(
+            identity=ListingIdentity(code=PropertyCode("PT00028"), title="Ponto comercial"),
+            valuation=ListingValuation(rental_price=ListingPrice(620), property_type="PONTO"),
+        ),
+        details=details,
+    )
+
+    with pytest.raises(ValueError, match="PT00028"):
+        listing.to_dictionary()
+
+
 def test_listing_entities_and_collection() -> None:
     """Ensure RentalListing and collections serialize to dictionary."""
     identity = ListingIdentity(code=PropertyCode("AP001"), title="Apartamento 2Q")
     valuation = ListingValuation(rental_price=ListingPrice(1000.0), property_type="Apartamento")
     core = ListingCore(identity=identity, valuation=valuation)
-    details = ListingDetails(location_summary="Centro, Timóteo", media_url="http://img.jpg")
+    resources = ListingResources(media_url="http://img.jpg", property_url="https://example.test/alugar/789")
+    details = ListingDetails(location_summary="Centro, Timóteo", resources=resources)
     listing = RentalListing(core=core, details=details)
 
     collection = RentalListingCollection(listings=(listing,))
@@ -120,3 +168,5 @@ def test_listing_entities_and_collection() -> None:
     assert data["returned_count"] == 1
     assert len(data["listings"]) == 1
     assert data["listings"][0]["code"] == "AP001"
+    assert data["listings"][0]["media_url"] == "http://img.jpg"
+    assert data["listings"][0]["url"] == "https://example.test/alugar/789"

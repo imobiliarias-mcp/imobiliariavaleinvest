@@ -2,6 +2,7 @@
 
 import re
 import unicodedata
+
 from scripts.client.configuration import ValeInvestConfiguration
 from scripts.domain.criteria import RentalFilter
 
@@ -80,6 +81,10 @@ class ValeInvestQueryBuilder:
             segments.append(f"quantidade-{pag.page_size}")
         if pag.page_number > 1:
             segments.append(f"pagina-{pag.page_number}")
+
+    def public_base_url(self) -> str:
+        """Return configured public site origin for parser link resolution."""
+        return self._config.public_base_url()
 
     def build_search_path(self, search_filter: RentalFilter) -> str:
         """Construct relative URL path for rental search criteria."""

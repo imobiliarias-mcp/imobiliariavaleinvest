@@ -31,8 +31,10 @@ def main() -> None:
         print(f"Erro ao buscar imóvel: {error}", file=sys.stderr)
         sys.exit(1)
     formatted_view = property_detail.format_detailed_view()
+    listing_data = property_detail.to_dictionary()
     print("\n" + "=" * 70)
     print(formatted_view)
+    print(f"Link: {listing_data['url']}")
     print("=" * 70 + "\n")
 
 

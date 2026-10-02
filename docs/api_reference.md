@@ -23,6 +23,7 @@ print(f"Total matching: {result.total_count()}")
 
 for listing in result.listings():
     print(listing.format_summary())
+    print("Public property URL:", listing.to_dictionary()["url"])
 ```
 
 ### 2. Retrieve Property Details
@@ -35,6 +36,7 @@ provider = ValeInvestRentalProvider.create_default()
 # Retrieve by ID or Reference
 property_detail = provider.get_property_detail(PropertyCode("78933085"))
 print(property_detail.format_detailed_view())
+print("Public property URL:", property_detail.to_dictionary()["url"])
 ```
 
 ### 3. Retrieve Search Facets & Taxonomy

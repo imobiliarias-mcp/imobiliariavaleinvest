@@ -2,23 +2,33 @@
 
 import json
 import re
+from urllib.parse import parse_qs, urlsplit
+
 from bs4 import BeautifulSoup, Tag
+
+from scripts.client.property_detail_parser import ValeInvestPropertyDetailParser
+from scripts.client.public_urls import PublicPropertyUrlError, PublicPropertyUrlResolver
 from scripts.domain.collections import (
     FacetCollection,
     RentalListingCollection,
     RentalSearchResult,
 )
 from scripts.domain.entities import (
-    DetailedProfile,
     ListingCore,
     ListingDetails,
     ListingIdentity,
+    ListingResources,
     ListingValuation,
     RentalListing,
-    RentalPropertyDetail,
 )
-from scripts.domain.exceptions import PropertyNotFoundException
 from scripts.domain.value_objects import ListingPrice, PropertyCode
+
+__all__ = [
+    "CardFieldExtractor",
+    "ValeInvestFacetParser",
+    "ValeInvestPropertyDetailParser",
+    "ValeInvestSearchResultParser",
+]
 
 
 class CardFieldExtractor:
@@ -27,16 +37,29 @@ class CardFieldExtractor:
     @staticmethod
     def extract_identifier(card_tag: Tag, href: str) -> str:
         """Extract property unique identifier from card href or favorites action."""
-        id_match = re.search(r"/(\d+)/?$", href)
+        try:
+            parsed_href = urlsplit(href)
+        except ValueError as error:
+            context = CardFieldExtractor.extract_public_reference(card_tag) or "unknown"
+            raise PublicPropertyUrlError(f"Invalid public property URL for '{context}'.") from error
+        query_identifier = parse_qs(parsed_href.query).get("id", [""])[0]
+        if query_identifier.isdigit():
+            return query_identifier
+        id_match = re.search(r"/(\d+)/?$", parsed_href.path)
         if id_match:
             return id_match.group(1)
-        fav_elem = card_tag.find(class_="botao_favoritos_fundo")
-        if fav_elem and fav_elem.has_attr("onclick"):
-            onclick = str(fav_elem["onclick"])
-            match = re.search(r"favoritos\('(\d+)'\)", onclick)
-            if match:
-                return match.group(1)
-        return "0"
+        return CardFieldExtractor._extract_favorite_identifier(card_tag)
+
+    @staticmethod
+    def _extract_favorite_identifier(card_tag: Tag) -> str:
+        """Read fallback listing ID from the favorites action."""
+        favorite_element = card_tag.find(class_="botao_favoritos_fundo")
+        if not favorite_element or not favorite_element.has_attr("onclick"):
+            return "0"
+        match = re.search(r"favoritos\('(\d+)'\)", str(favorite_element["onclick"]))
+        if not match:
+            return "0"
+        return match.group(1)
 
     @staticmethod
     def extract_price(card_tag: Tag) -> ListingPrice:
@@ -51,41 +74,73 @@ class CardFieldExtractor:
         return ListingPrice(float(numeric_str))
 
     @staticmethod
-    def extract_reference(card_tag: Tag, fallback_id: str) -> str:
-        """Extract business reference code from flag tag."""
+    def extract_public_reference(card_tag: Tag) -> str:
+        """Extract an explicit public reference code from the card."""
         ref_elem = card_tag.find(class_="flag_ref")
         if not ref_elem:
-            return fallback_id
+            return ""
         text = ref_elem.get_text(strip=True)
-        cleaned = text.replace("Ref.", "").replace("Ref", "").strip()
-        if not cleaned:
-            return fallback_id
-        return cleaned
+        return text.replace("Ref.", "").replace("Ref", "").strip()
+
+    @staticmethod
+    def extract_reference(card_tag: Tag, fallback_id: str) -> str:
+        """Return explicit public reference or the stable card identifier."""
+        public_reference = CardFieldExtractor.extract_public_reference(card_tag)
+        return public_reference or fallback_id
 
 
 class ValeInvestSearchResultParser:
     """Parses search results HTML page into domain collections."""
 
+    DEFAULT_PUBLIC_BASE_URL = "https://imobiliariavaleinvest.com.br"
+
+    def __init__(self, public_base_url: str = DEFAULT_PUBLIC_BASE_URL) -> None:
+        """Initialize URL resolution with the configured public origin."""
+        self._url_resolver = PublicPropertyUrlResolver(public_base_url)
+
     def _parse_card(self, card_tag: Tag) -> RentalListing:
         """Parse individual card HTML tag into domain RentalListing."""
         href = str(card_tag.get("href", ""))
-        prop_id = CardFieldExtractor.extract_identifier(card_tag, href)
-        ref_code = CardFieldExtractor.extract_reference(card_tag, prop_id)
+        property_id = CardFieldExtractor.extract_identifier(card_tag, href)
+        reference = CardFieldExtractor.extract_public_reference(card_tag)
+        identity = self._build_identity(card_tag, property_id, reference)
+        valuation = self._build_valuation(card_tag)
+        details = self._build_details(card_tag, href, property_id, reference)
+        return RentalListing(core=ListingCore(identity=identity, valuation=valuation), details=details)
+
+    def _build_identity(self, card_tag: Tag, property_id: str, reference: str) -> ListingIdentity:
+        """Build listing identity from explicit reference and card identifier."""
+        code = reference or property_id
         title_elem = card_tag.find(class_="titulo_novo")
-        prop_type = title_elem.get_text(strip=True) if title_elem else "Imóvel"
-        price_vo = CardFieldExtractor.extract_price(card_tag)
-        loc_elem = card_tag.find(class_="final_card")
-        location_str = loc_elem.get_text(strip=True) if loc_elem else ""
-        img_elem = card_tag.find("img")
-        media_url = ""
-        if img_elem:
-            media_url = img_elem.get("data-src") or img_elem.get("src", "")
-        code_vo = PropertyCode(ref_code)
-        identity = ListingIdentity(code=code_vo, title=f"{prop_type} - {ref_code}")
-        valuation = ListingValuation(rental_price=price_vo, property_type=prop_type)
-        core = ListingCore(identity=identity, valuation=valuation)
-        details = ListingDetails(location_summary=location_str, media_url=media_url)
-        return RentalListing(core=core, details=details)
+        property_type = title_elem.get_text(strip=True) if title_elem else "Imóvel"
+        return ListingIdentity(code=PropertyCode(code), title=f"{property_type} - {code}")
+
+    def _build_valuation(self, card_tag: Tag) -> ListingValuation:
+        """Build listing valuation from card price and type fields."""
+        title_elem = card_tag.find(class_="titulo_novo")
+        property_type = title_elem.get_text(strip=True) if title_elem else "Imóvel"
+        price = CardFieldExtractor.extract_price(card_tag)
+        return ListingValuation(rental_price=price, property_type=property_type)
+
+    def _build_details(
+        self, card_tag: Tag, href: str, property_id: str, reference: str
+    ) -> ListingDetails:
+        """Build location and normalized property/media resources."""
+        location_elem = card_tag.find(class_="final_card")
+        location = location_elem.get_text(strip=True) if location_elem else ""
+        image_elem = card_tag.find("img")
+        media_url = self._extract_media_url(image_elem)
+        context = reference or property_id or "unknown"
+        fallback_url = self._url_resolver.reference_fallback_url(reference)
+        property_url = self._url_resolver.resolve(href, context, fallback_url)
+        resources = ListingResources(media_url=media_url, property_url=property_url)
+        return ListingDetails(location_summary=location, resources=resources)
+
+    def _extract_media_url(self, image_elem: Tag | None) -> str:
+        """Return primary card image URL when present."""
+        if not image_elem:
+            return ""
+        return str(image_elem.get("data-src") or image_elem.get("src", ""))
 
     def _extract_total_count(self, soup: BeautifulSoup, parsed_cards_count: int) -> int:
         """Extract total listings count from hidden input or card count."""
@@ -107,58 +162,6 @@ class ValeInvestSearchResultParser:
         collection = RentalListingCollection(listings=tuple(listings))
         total_count = self._extract_total_count(soup, len(listings))
         return RentalSearchResult(collection=collection, total_listings_count=total_count)
-
-
-class ValeInvestPropertyDetailParser:
-    """Parses property detail page HTML into RentalPropertyDetail entity."""
-
-    def _extract_detail_price(self, soup: BeautifulSoup) -> ListingPrice:
-        """Extract rental price from detail page."""
-        h4_elem = soup.find("h4")
-        if not h4_elem:
-            return ListingPrice(0.0)
-        raw_text = h4_elem.get_text(strip=True)
-        numeric_str = re.sub(r"[^\d,]", "", raw_text).replace(",", ".")
-        if not numeric_str:
-            return ListingPrice(0.0)
-        return ListingPrice(float(numeric_str))
-
-    def _extract_photos(self, soup: BeautifulSoup) -> list[str]:
-        """Extract photo URLs from detail gallery."""
-        photos = []
-        for img in soup.find_all("img", class_="swiper_slide_img"):
-            src = img.get("data-src") or img.get("src")
-            if src and "cdn.uso.com.br" in src:
-                photos.append(str(src))
-        return photos
-
-    def parse_property_detail(self, html_content: str) -> RentalPropertyDetail:
-        """Parse property detail HTML into domain entity."""
-        soup = BeautifulSoup(html_content, "html.parser")
-        pk_input = soup.find(id="pkimovel_ficha")
-        if not pk_input:
-            raise PropertyNotFoundException("Property detail inputs not found on page.")
-        ref_input = soup.find(id="referencia_imovel_ficha")
-        code_str = str(ref_input["value"]).strip() if ref_input else str(pk_input["value"]).strip()
-        code_vo = PropertyCode(code_str)
-        title_elem = soup.find("h1", class_="titulo")
-        title_str = title_elem.get_text(strip=True) if title_elem else f"Imóvel {code_str}"
-        loc_elem = soup.find("h2", class_="localizacao")
-        loc_str = loc_elem.get_text(strip=True) if loc_elem else ""
-        price_vo = self._extract_detail_price(soup)
-        desc_elem = soup.find(id="descricao_imovel")
-        desc_str = desc_elem.get_text(separator=" ", strip=True) if desc_elem else ""
-        features = [d.get_text(separator=" ", strip=True) for d in soup.find_all(class_="detalhe_novo")]
-        amenities_str = ", ".join(features)
-        photos = self._extract_photos(soup)
-        main_photo = photos[0] if photos else ""
-        identity = ListingIdentity(code=code_vo, title=title_str)
-        valuation = ListingValuation(rental_price=price_vo, property_type="Imóvel")
-        core = ListingCore(identity=identity, valuation=valuation)
-        details = ListingDetails(location_summary=loc_str, media_url=main_photo)
-        listing = RentalListing(core=core, details=details)
-        profile = DetailedProfile(description=desc_str, amenities_summary=amenities_str)
-        return RentalPropertyDetail(listing=listing, profile=profile)
 
 
 class ValeInvestFacetParser:

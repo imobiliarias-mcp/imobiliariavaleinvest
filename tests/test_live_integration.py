@@ -46,10 +46,11 @@ def test_live_target_url_reproduction(provider: ValeInvestRentalProvider) -> Non
 
 def test_live_property_detail_retrieval(provider: ValeInvestRentalProvider) -> None:
     """Ensure live property detail retrieval fetches complete info."""
-    code = PropertyCode("78933085")
-    detail = provider.get_property_detail(code)
+    search_result = provider.search_rentals(RentalFilter().with_city("Coronel Fabriciano"))
+    listed_code = next(iter(search_result.listings())).code()
+    detail = provider.get_property_detail(PropertyCode(listed_code))
 
-    assert detail.listing.code() in ["78933085", "PT00028"]
+    assert detail.listing.code() == listed_code
     assert detail.listing.core.valuation.rental_price.value() > 0.0
     assert "FABRICIANO" in detail.listing.details.location_summary.upper()
 
